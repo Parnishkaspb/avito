@@ -1,0 +1,12 @@
+server:
+  port: 8080
+  host: "localhost"
+  timeout: 30s
+
+postgresql:
+  user: "user"
+  password: "password"
+  host: "localhost"
+  port: 5432
+  db: "avito"
+  sslmode: "disable"
