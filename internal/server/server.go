@@ -46,7 +46,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /team/add", s.createTeamHandler)
 }
 
-func (s *Server) Run(ctx context.Context) error {
+func (s *Server) RunServer(ctx context.Context) error {
 	s.setupRoutes()
 
 	server := &http.Server{

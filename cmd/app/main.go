@@ -24,7 +24,7 @@ func main() {
 	go func() {
 		defer wg.Done()
 		db := database.New(cfg.Postgre)
-		if err := db.Run(ctx); err != nil {
+		if err := db.RunDatabase(ctx); err != nil {
 			log.Printf("Database error: %v", err)
 			cancel()
 		}
@@ -36,7 +36,7 @@ func main() {
 	go func() {
 		defer wg.Done()
 		server := myserver.New(cfg.Server)
-		if err := server.Run(ctx); err != nil {
+		if err := server.RunServer(ctx); err != nil {
 			log.Printf("Server error: %v", err)
 			cancel()
 		}

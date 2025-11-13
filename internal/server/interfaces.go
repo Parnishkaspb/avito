@@ -6,6 +6,6 @@ import (
 )
 
 type IServer interface {
-	Run(ctx context.Context) error
+	RunServer(ctx context.Context) error
 	createTeamHandler(w http.ResponseWriter, r *http.Request)
 }

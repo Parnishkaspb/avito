@@ -28,25 +28,25 @@ func New(databaseConfig config.PostreSQLConfig) IDatabase {
 	}
 }
 
-func (db *Database) Run(ctx context.Context) error {
+func (db *Database) RunDatabase(ctx context.Context) error {
 	url := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
 		db.User, db.Password, db.Host, db.Port, db.DB, db.SSLMode,
 	)
 
 	conn, err := pgx.Connect(ctx, url)
 	if err != nil {
-		return fmt.Errorf("unable to connect to database: %w", err)
+		return fmt.Errorf("проблемы с подключением к БД: %w", err)
 	}
 	defer conn.Close(ctx)
 
 	if err := conn.Ping(ctx); err != nil {
-		return fmt.Errorf("database ping failed: %w", err)
+		return fmt.Errorf("ошибка! БД не пигнуется: %w", err)
 	}
 
-	log.Println("✅ Database connected successfully")
+	log.Println("Соединение с БД успешно выполненно")
 
 	<-ctx.Done()
-	log.Println("✅ Database shutdown completed")
+	log.Println("Успешное выключение БД")
 
 	return nil
 }
