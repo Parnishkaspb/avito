@@ -11,6 +11,7 @@ import (
 type Config struct {
 	Server  ServerConfig    `yaml:"server"`
 	Postgre PostreSQLConfig `yaml:"postgresql"`
+	JWT     JWTConfig       `yaml:"jwt"`
 }
 
 type ServerConfig struct {
@@ -26,6 +27,10 @@ type PostreSQLConfig struct {
 	Port     int    `yaml:"port" env-required:"true"`
 	DB       string `yaml:"db"   env-required:"true"`
 	SSLMode  string `yaml:"sslmode"  env-default:"disable"`
+}
+
+type JWTConfig struct {
+	Secret string `yaml:"jwt_secret" env-required:"true"`
 }
 
 func MustLoad() *Config {

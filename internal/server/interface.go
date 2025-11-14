@@ -8,4 +8,5 @@ import (
 type IServer interface {
 	RunServer(ctx context.Context) error
 	createTeamHandler(w http.ResponseWriter, r *http.Request)
+	getTeamHandler(w http.ResponseWriter, r *http.Request)
 }

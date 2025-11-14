@@ -1,11 +1,11 @@
-package server
+package models
 
-type requestTeamAdd struct {
+type RequestTeamAdd struct {
 	TeamName string           `json:"team_name"`
-	Members  []requestMembers `json:"members"`
+	Members  []RequestMembers `json:"members"`
 }
 
-type requestMembers struct {
+type RequestMembers struct {
 	UserID   string `json:"user_id"`
 	Username string `json:"username"`
 	IsActive bool   `json:"is_active"`

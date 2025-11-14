@@ -10,3 +10,6 @@ postgresql:
   port: 5432
   db: "avito"
   sslmode: "disable"
+
+jwt:
+  jwt_secret: "SaultHelloAvito"

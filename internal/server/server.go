@@ -4,20 +4,76 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/Parnishkaspb/avito/internal/config"
+	"github.com/Parnishkaspb/avito/internal/jwt"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/Parnishkaspb/avito/internal/config"
+	"github.com/Parnishkaspb/avito/internal/constants"
+	"github.com/Parnishkaspb/avito/internal/database"
+	"github.com/Parnishkaspb/avito/internal/models"
 )
 
 type Server struct {
-	port   int
-	host   string
-	router *http.ServeMux
+	port       int
+	host       string
+	router     *http.ServeMux
+	db         database.DB
+	jwtService *jwt.Service
 }
 
-func (s Server) createTeamHandler(w http.ResponseWriter, r *http.Request) {
+func New(serverConfig config.ServerConfig, db database.DB, jwt_secret string) *Server {
+	jwtConfig := jwt.Config{
+		SecretKey:       jwt_secret,
+		Issuer:          "avito",
+		AccessTokenTTL:  15 * time.Minute,
+		RefreshTokenTTL: 7 * 24 * time.Hour,
+	}
+
+	return &Server{
+		port:       serverConfig.Port,
+		host:       serverConfig.Host,
+		router:     http.NewServeMux(),
+		db:         db,
+		jwtService: jwt.New(jwtConfig),
+	}
+}
+
+func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Authorization header required", http.StatusUnauthorized)
+			return
+		}
+
+		parts := strings.Split(authHeader, " ")
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			http.Error(w, "Invalid authorization format", http.StatusUnauthorized)
+			return
+		}
+
+		token := parts[1]
+
+		claims, err := s.jwtService.ValidateToken(token)
+		if err != nil {
+			http.Error(w, "Invalid token: "+err.Error(), http.StatusUnauthorized)
+			return
+		}
+
+		ctx := r.Context()
+		ctx = context.WithValue(ctx, "userID", claims.UserID)
+		ctx = context.WithValue(ctx, "userEmail", claims.Name)
+		r = r.WithContext(ctx)
+
+		next(w, r)
+	}
+}
+
+func (s *Server) createTeamHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		tmp := fmt.Sprintf("Ошибка обращения к createTeamHandler. Метод: %s - требуемый: POST", r.Method)
@@ -25,21 +81,34 @@ func (s Server) createTeamHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var teamAdd requestTeamAdd
+	var teamAdd models.RequestTeamAdd
 
 	if err := json.NewDecoder(r.Body).Decode(&teamAdd); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	fmt.Println(teamAdd)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	response := map[string]interface{}{
-		"team": teamAdd,
+	exists, err := s.db.CreateTeam(context.Background(), teamAdd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
-	json.NewEncoder(w).Encode(response)
+
+	if !exists {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		response := map[string]interface{}{
+			"team": teamAdd,
+		}
+		json.NewEncoder(w).Encode(response)
+	} else {
+		s.writeError(w, constants.TEAM_EXISTS, "team_name already exists", http.StatusBadRequest)
+	}
+
+}
+
+func (s *Server) getTeamHandler(w http.ResponseWriter, r *http.Request) {
+
 }
 
 func (s *Server) setupRoutes() {
@@ -92,10 +161,14 @@ func (s *Server) gracefulShutdown(server *http.Server) error {
 	return nil
 }
 
-func New(serverConfig config.ServerConfig) IServer {
-	return &Server{
-		port:   serverConfig.Port,
-		host:   serverConfig.Host,
-		router: http.NewServeMux(),
-	}
+func (s *Server) writeError(w http.ResponseWriter, code, msg string, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error": map[string]string{
+			"code":    code,
+			"message": msg,
+		},
+	})
 }

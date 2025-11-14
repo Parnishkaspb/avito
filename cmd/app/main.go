@@ -20,10 +20,11 @@ func main() {
 
 	var wg sync.WaitGroup
 
+	db := database.New(cfg.Postgre)
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		db := database.New(cfg.Postgre)
 		if err := db.RunDatabase(ctx); err != nil {
 			log.Printf("Database error: %v", err)
 			cancel()
@@ -35,7 +36,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		server := myserver.New(cfg.Server)
+		server := myserver.New(cfg.Server, db, cfg.JWT.Secret)
 		if err := server.RunServer(ctx); err != nil {
 			log.Printf("Server error: %v", err)
 			cancel()
