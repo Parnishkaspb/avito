@@ -2,6 +2,8 @@ package database
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/Parnishkaspb/avito/internal/config"
 	"github.com/Parnishkaspb/avito/internal/helper"
@@ -147,4 +149,55 @@ func (db *Database) CheckRoleUser(ctx context.Context, user_id string) (bool, er
 	}
 
 	return is_admin, nil
+}
+
+func (db *Database) ReturnTeamID(ctx context.Context, teamName string) (string, bool, error) {
+	var teamID string
+	err := db.Pool.QueryRow(
+		ctx,
+		"SELECT id FROM teams WHERE name = $1",
+		teamName,
+	).Scan(&teamID)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("ошибка базы данных: %w", err)
+	}
+
+	return teamID, true, nil
+}
+
+func (db *Database) ReturnTeamMembersByTeamID(ctx context.Context, teamID string) ([]models.RequestMembers, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT tm.user_id, u.name as username, tm.is_active 
+         FROM team_members tm 
+         INNER JOIN users u ON u.id = tm.user_id 
+         WHERE tm.is_active = true AND u.is_active = true AND tm.team_id = $1`,
+		teamID)
+
+	if err != nil {
+		return nil, fmt.Errorf("ошибка запроса участников команды: %w", err)
+	}
+	defer rows.Close()
+
+	var members []models.RequestMembers
+	for rows.Next() {
+		var member models.RequestMembers
+		if err := rows.Scan(&member.UserID, &member.Username, &member.IsActive); err != nil {
+			return nil, fmt.Errorf("ошибка чтения данных: %w", err)
+		}
+		members = append(members, member)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ошибка обработки результатов: %w", err)
+	}
+
+	if members == nil {
+		members = []models.RequestMembers{}
+	}
+
+	return members, nil
 }

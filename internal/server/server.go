@@ -115,17 +115,29 @@ func (s *Server) getTeamHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	teamExist, err := s.db.CheckTeam(context.Background(), teamName)
+	teamID, found, err := s.db.ReturnTeamID(context.Background(), teamName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if !teamExist {
+	if !found {
 		s.writeError(w, constants.NOT_FOUND, "resource not found", http.StatusNotFound)
 	}
 
-	fmt.Println(teamName)
+	teamMembers, err := s.db.ReturnTeamMembersByTeamID(context.Background(), teamID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	teamRequest := models.RequestTeamAdd{
+		TeamName: teamName,
+		Members:  teamMembers,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(teamRequest)
 }
 
 func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
