@@ -8,6 +8,7 @@ import (
 type CustomClaims struct {
 	UserID string `json:"user_id"`
 	Name   string `json:"name"`
+	Role   bool   `json:"role"`
 	jwt.RegisteredClaims
 }
 

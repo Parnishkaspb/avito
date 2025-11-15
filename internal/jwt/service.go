@@ -25,10 +25,11 @@ func New(config Config) *Service {
 	}
 }
 
-func (s *Service) GenerateAccessToken(userID, name string) (string, error) {
+func (s *Service) GenerateAccessToken(userID, name string, role bool) (string, error) {
 	claims := CustomClaims{
 		UserID: userID,
 		Name:   name,
+		Role:   role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(s.config.AccessTokenTTL)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -47,10 +48,11 @@ func (s *Service) GenerateAccessToken(userID, name string) (string, error) {
 	return tokenString, nil
 }
 
-func (s *Service) GenerateRefreshToken(userID, name string) (string, error) {
+func (s *Service) GenerateRefreshToken(userID, name string, role bool) (string, error) {
 	claims := CustomClaims{
 		UserID: userID,
 		Name:   name,
+		Role:   role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(s.config.RefreshTokenTTL)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -69,13 +71,13 @@ func (s *Service) GenerateRefreshToken(userID, name string) (string, error) {
 	return tokenString, nil
 }
 
-func (s *Service) GenerateTokenPair(userID, name string) (*TokenPair, error) {
-	accessToken, err := s.GenerateAccessToken(userID, name)
+func (s *Service) GenerateTokenPair(userID, name string, role bool) (*TokenPair, error) {
+	accessToken, err := s.GenerateAccessToken(userID, name, role)
 	if err != nil {
 		return nil, err
 	}
 
-	refreshToken, err := s.GenerateRefreshToken(userID, name)
+	refreshToken, err := s.GenerateRefreshToken(userID, name, role)
 	if err != nil {
 		return nil, err
 	}
@@ -116,5 +118,5 @@ func (s *Service) RefreshTokens(refreshToken string) (*TokenPair, error) {
 		return nil, err
 	}
 
-	return s.GenerateTokenPair(claims.UserID, claims.Name)
+	return s.GenerateTokenPair(claims.UserID, claims.Name, claims.Role)
 }

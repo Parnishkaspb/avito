@@ -66,7 +66,8 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx := r.Context()
 		ctx = context.WithValue(ctx, "userID", claims.UserID)
-		ctx = context.WithValue(ctx, "userEmail", claims.Name)
+		ctx = context.WithValue(ctx, "userName", claims.Name)
+		ctx = context.WithValue(ctx, "userRole", claims.Role)
 		r = r.WithContext(ctx)
 
 		next(w, r)
@@ -108,11 +109,57 @@ func (s *Server) createTeamHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getTeamHandler(w http.ResponseWriter, r *http.Request) {
+	teamName := r.URL.Query().Get("team_name")
+	if teamName == "" {
+		http.Error(w, "team_name обязателен!", http.StatusBadRequest)
+		return
+	}
 
+	teamExist, err := s.db.CheckTeam(context.Background(), teamName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if !teamExist {
+		s.writeError(w, constants.NOT_FOUND, "resource not found", http.StatusNotFound)
+	}
+
+	fmt.Println(teamName)
+}
+
+func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.ID == "" || req.Name == "" {
+		http.Error(w, "Отсутствует из параметров обязательных параметров", http.StatusBadRequest)
+		return
+	}
+
+	role, err := s.db.CheckRoleUser(context.Background(), req.ID)
+
+	tokenPair, err := s.jwtService.GenerateTokenPair(req.ID, req.Name, role)
+	if err != nil {
+		http.Error(w, "Failed to generate tokens", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tokenPair)
 }
 
 func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /team/add", s.createTeamHandler)
+	s.router.HandleFunc("GET /team/get", s.authMiddleware(s.getTeamHandler))
+	s.router.HandleFunc("POST /login", s.loginHandler)
 }
 
 func (s *Server) RunServer(ctx context.Context) error {

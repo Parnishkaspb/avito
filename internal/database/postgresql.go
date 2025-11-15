@@ -56,7 +56,7 @@ func (db *Database) RunDatabase(ctx context.Context) error {
 	return nil
 }
 
-func (db *Database) сheckTeam(ctx context.Context, teamName string) (bool, error) {
+func (db *Database) CheckTeam(ctx context.Context, teamName string) (bool, error) {
 	var exists bool
 	err := db.Pool.QueryRow(
 		ctx,
@@ -72,7 +72,7 @@ func (db *Database) сheckTeam(ctx context.Context, teamName string) (bool, erro
 }
 
 func (db *Database) CreateTeam(ctx context.Context, teamAdd models.RequestTeamAdd) (bool, error) {
-	exists, err := db.сheckTeam(ctx, teamAdd.TeamName)
+	exists, err := db.CheckTeam(ctx, teamAdd.TeamName)
 	if err != nil {
 		log.Printf("проблемы с проверкой команды: %s", err)
 		return false, fmt.Errorf("ошибка запроса: %w", err)
@@ -125,11 +125,26 @@ func (db *Database) CreateTeam(ctx context.Context, teamAdd models.RequestTeamAd
 }
 
 func (db *Database) GetTeam(ctx context.Context, teamName string) (bool, error) {
-	exists, err := db.сheckTeam(ctx, teamName)
+	exists, err := db.CheckTeam(ctx, teamName)
 	if err != nil {
 		log.Printf("проблемы с проверкой команды: %s", err)
 		return false, fmt.Errorf("ошибка запроса: %w", err)
 	}
 
 	return exists, nil
+}
+
+func (db *Database) CheckRoleUser(ctx context.Context, user_id string) (bool, error) {
+	var is_admin bool
+	err := db.Pool.QueryRow(
+		ctx,
+		"SELECT is_admin FROM team_members WHERE user_id = $1 AND is_active = true",
+		user_id,
+	).Scan(&is_admin)
+
+	if err != nil {
+		return false, fmt.Errorf("ошибка запроса: %w", err)
+	}
+
+	return is_admin, nil
 }

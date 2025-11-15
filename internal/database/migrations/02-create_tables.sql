@@ -6,7 +6,7 @@ CREATE TABLE users (
 
 CREATE TABLE teams (
      id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid()::VARCHAR,
-     name VARCHAR
+     name VARCHAR UNIQUE
 );
 
 CREATE TABLE team_members (
