@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Parnishkaspb/avito/internal/helper"
 	"github.com/Parnishkaspb/avito/internal/jwt"
 	"log"
 	"net/http"
@@ -23,6 +24,19 @@ type Server struct {
 	router     *http.ServeMux
 	db         database.DB
 	jwtService *jwt.Service
+}
+
+type contextKey string
+
+const (
+	userIDKey   contextKey = "userID"
+	userNameKey contextKey = "userName"
+	userRoleKey contextKey = "userRole"
+)
+
+func getUserRole(ctx context.Context) (bool, bool) {
+	role, ok := ctx.Value(userRoleKey).(bool)
+	return role, ok
 }
 
 func New(serverConfig config.ServerConfig, db database.DB, jwt_secret string) *Server {
@@ -65,10 +79,23 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
-		ctx = context.WithValue(ctx, "userID", claims.UserID)
-		ctx = context.WithValue(ctx, "userName", claims.Name)
-		ctx = context.WithValue(ctx, "userRole", claims.Role)
+		ctx = context.WithValue(ctx, userIDKey, claims.UserID)
+		ctx = context.WithValue(ctx, userNameKey, claims.Name)
+		ctx = context.WithValue(ctx, userRoleKey, claims.Role)
 		r = r.WithContext(ctx)
+
+		next(w, r)
+	}
+}
+
+func (s *Server) adminRoleMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		role, _ := getUserRole(r.Context())
+
+		if !role {
+			s.writeError(w, constants.NOT_FOUND, "resource not found", http.StatusUnauthorized)
+			return
+		}
 
 		next(w, r)
 	}
@@ -82,7 +109,7 @@ func (s *Server) createTeamHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var teamAdd models.RequestTeamAdd
+	var teamAdd models.RequestTeamAddResponse
 
 	if err := json.NewDecoder(r.Body).Decode(&teamAdd); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -123,14 +150,16 @@ func (s *Server) getTeamHandler(w http.ResponseWriter, r *http.Request) {
 
 	if !found {
 		s.writeError(w, constants.NOT_FOUND, "resource not found", http.StatusNotFound)
+		return
 	}
 
 	teamMembers, err := s.db.ReturnTeamMembersByTeamID(context.Background(), teamID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
-	teamRequest := models.RequestTeamAdd{
+	teamRequest := models.RequestTeamAddResponse{
 		TeamName: teamName,
 		Members:  teamMembers,
 	}
@@ -168,10 +197,141 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(tokenPair)
 }
 
+func (s *Server) setIsActiveUserHandler(w http.ResponseWriter, r *http.Request) {
+	var userActive models.UserActive
+
+	if err := json.NewDecoder(r.Body).Decode(&userActive); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	exists, err := s.db.CheckUser(context.Background(), userActive.UserID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	if !exists {
+		s.writeError(w, constants.NOT_FOUND, "resource not found", http.StatusNotFound)
+		return
+	}
+
+	_, err = s.db.UpdateActive(context.Background(), userActive.UserID, userActive.IsActive)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	info, err := s.db.GetUser(context.Background(), userActive.UserID)
+
+	response := map[string]models.UserActiveResponse{
+		"user": info,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) getReviewHandler(w http.ResponseWriter, r *http.Request) {
+	userID := r.URL.Query().Get("user_id")
+	if userID == "" {
+		http.Error(w, "user_id обязателен!", http.StatusBadRequest)
+		return
+	}
+
+	pullRequests, err := s.db.ReturnUserReviewByUserID(context.Background(), userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	response := models.UserPullRequestsResponse{
+		UserID:       userID,
+		PullRequests: pullRequests,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) createPullRequestHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+		tmp := fmt.Sprintf("Ошибка обращения к createTeamHandler. Метод: %s - требуемый: POST", r.Method)
+		log.Fatal(tmp)
+		return
+	}
+
+	var PRCR models.PullRequestCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&PRCR); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	exists, err := s.db.CheckPR(context.Background(), PRCR.PullRequestId)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	if exists {
+		s.writeError(w, constants.PR_EXISTS, "PR id already exists", http.StatusConflict)
+		return
+	}
+
+	info, err := s.db.GetUser(context.Background(), PRCR.AuthorID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	if info.UserID == "" || info.TeamName == "" {
+		s.writeError(w, constants.NOT_FOUND, "resource not found", http.StatusNotFound)
+		return
+	}
+
+	//TODO:
+	// 1) Посмотреть участников в команде исключая автора и все должны быть активными
+	// 2) Создать PR
+	// 3) Создать Коннект между участниками и Пулл
+
+	teamMates, err := s.db.ReturnTeamMembersByUserID(context.Background(), info.UserID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	pullRequest, err := s.db.CreatePullRequest(context.Background(), PRCR.PullRequestId, PRCR.PullRequestName, PRCR.AuthorID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	randomTeamMates := helper.PickRandomTeamMates(teamMates, 2)
+
+	_, err = s.db.CreatePullRequestAssignedReview(context.Background(), pullRequest.PullRequestID, randomTeamMates)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	response := models.PullRequestResponse{
+		PullRequestID:     pullRequest.PullRequestID,
+		PullRequestName:   pullRequest.PullRequestName,
+		AuthorID:          pullRequest.AuthorID,
+		Status:            pullRequest.Status,
+		AssignedReviewers: randomTeamMates,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
 func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /team/add", s.createTeamHandler)
-	s.router.HandleFunc("GET /team/get", s.authMiddleware(s.getTeamHandler))
+	s.router.HandleFunc("GET  /team/get", s.authMiddleware(s.getTeamHandler))
 	s.router.HandleFunc("POST /login", s.loginHandler)
+	s.router.HandleFunc("POST /users/setIsActive", s.authMiddleware(s.adminRoleMiddleware(s.setIsActiveUserHandler)))
+	s.router.HandleFunc("GET  /users/getReview", s.authMiddleware(s.getReviewHandler))
+	s.router.HandleFunc("POST /pullRequest/create", s.authMiddleware(s.adminRoleMiddleware(s.createPullRequestHandler)))
+
 }
 
 func (s *Server) RunServer(ctx context.Context) error {

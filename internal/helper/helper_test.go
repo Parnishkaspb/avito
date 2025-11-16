@@ -29,7 +29,7 @@ func TestParseMembers_Negative(t *testing.T) {
 			name:   "empty teamID",
 			teamID: "",
 			members: []models.RequestMembers{
-				{UserID: "u1", IsActive: true},
+				{UserID: "u1"},
 			},
 			want: nil,
 		},

@@ -1,6 +1,10 @@
 package helper
 
-import "github.com/Parnishkaspb/avito/internal/models"
+import (
+	"github.com/Parnishkaspb/avito/internal/models"
+	"math/rand"
+	"time"
+)
 
 func ParseMembers(teamID string, members []models.RequestMembers) [][]interface{} {
 	if len(members) == 0 || teamID == "" {
@@ -17,9 +21,24 @@ func ParseMembers(teamID string, members []models.RequestMembers) [][]interface{
 		rows = append(rows, []interface{}{
 			teamID,
 			member.UserID,
-			true,
 		})
 	}
 
 	return rows
+}
+
+func PickRandomTeamMates(all []string, n int) []string {
+	if len(all) <= n {
+		return all
+	}
+
+	rand.Seed(time.Now().UnixNano())
+	picked := make([]string, n)
+	indices := rand.Perm(len(all))
+
+	for i := 0; i < n; i++ {
+		picked[i] = all[indices[i]]
+	}
+
+	return picked
 }
