@@ -24,3 +24,9 @@ type PullRequestResponse struct {
 	Status            string   `json:"status"`
 	AssignedReviewers []string `json:"assigned_reviewers"`
 }
+
+type StaticResponse struct {
+	TotalPRs   int           `json:"total_prs"`
+	TotalTeams int           `json:"total_teams"`
+	Teams      []TeamMetrics `json:"teams"`
+}

@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/Parnishkaspb/avito/internal/helper"
 	"github.com/Parnishkaspb/avito/internal/jwt"
+	"github.com/jackc/pgx/v5"
 	"log"
 	"net/http"
 	"strconv"
@@ -288,11 +290,6 @@ func (s *Server) createPullRequestHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	//TODO:
-	// 1) Посмотреть участников в команде исключая автора и все должны быть активными
-	// 2) Создать PR
-	// 3) Создать Коннект между участниками и Пулл
-
 	teamMates, err := s.db.ReturnTeamMembersByUserID(context.Background(), info.UserID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -324,14 +321,136 @@ func (s *Server) createPullRequestHandler(w http.ResponseWriter, r *http.Request
 	json.NewEncoder(w).Encode(response)
 }
 
+func (s *Server) mergePullRequestHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+		tmp := fmt.Sprintf("Ошибка обращения к createTeamHandler. Метод: %s - требуемый: POST", r.Method)
+		log.Fatal(tmp)
+		return
+	}
+
+	var req models.MergePRRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	exists, err := s.db.CheckPR(context.Background(), req.PullRequestID)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	if !exists {
+		s.writeError(w, constants.NOT_FOUND, "resource not found", http.StatusConflict)
+		return
+	}
+
+	res, err := s.db.MergePullRequest(context.Background(), req.PullRequestID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	response := map[string]models.PullRequest{
+		"pr": res,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) reassignPullRequestHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+		tmp := fmt.Sprintf("Ошибка обращения к createTeamHandler. Метод: %s - требуемый: POST", r.Method)
+		log.Fatal(tmp)
+		return
+	}
+
+	var req models.MergePRRequestReasing
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	status, err := s.db.CheckStatusPR(context.Background(), req.PullRequestID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if !status {
+		s.writeError(w, constants.PR_MERGED, "cannot reassign on merged PR", http.StatusNotFound)
+		return
+	}
+
+	teamMates, err := s.db.GetAvailableTeamMatesForPR(context.Background(), req.PullRequestID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+
+	if len(teamMates) == 0 {
+		s.writeError(w, constants.NO_CANDIDATE, "no active replacement candidate in team", http.StatusNotFound)
+		return
+	}
+
+	teamMateID := helper.PickRandomTeamMates(teamMates, 1)
+
+	err = s.db.ReassignPullRequest(context.Background(), req.PullRequestID, req.OldReviewerID, teamMateID[0])
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			s.writeError(w, constants.NOT_ASSIGNED, "reviewer is not assigned to this PR", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	info, err := s.db.PullRequestFullInformation(context.Background(), req.PullRequestID)
+	response := map[string]any{
+		"pr":          info,
+		"replaced_by": teamMateID[0],
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) getStatic(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	metrics, totalPRs, totalTeams, err := s.db.GetTeamMetrics(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("ошибка при получении метрик: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := models.StaticResponse{
+		TotalPRs:   totalPRs,
+		TotalTeams: totalTeams,
+		Teams:      metrics,
+	}
+
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, fmt.Sprintf("ошибка кодирования JSON: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
 func (s *Server) setupRoutes() {
 	s.router.HandleFunc("POST /team/add", s.createTeamHandler)
 	s.router.HandleFunc("GET  /team/get", s.authMiddleware(s.getTeamHandler))
+	s.router.HandleFunc("GET  /statistic", s.getStatic)
 	s.router.HandleFunc("POST /login", s.loginHandler)
 	s.router.HandleFunc("POST /users/setIsActive", s.authMiddleware(s.adminRoleMiddleware(s.setIsActiveUserHandler)))
 	s.router.HandleFunc("GET  /users/getReview", s.authMiddleware(s.getReviewHandler))
 	s.router.HandleFunc("POST /pullRequest/create", s.authMiddleware(s.adminRoleMiddleware(s.createPullRequestHandler)))
-
+	s.router.HandleFunc("POST /pullRequest/merge", s.authMiddleware(s.adminRoleMiddleware(s.mergePullRequestHandler)))
+	s.router.HandleFunc("POST /pullRequest/reassign", s.authMiddleware(s.adminRoleMiddleware(s.reassignPullRequestHandler)))
 }
 
 func (s *Server) RunServer(ctx context.Context) error {

@@ -24,4 +24,10 @@ type DB interface {
 	ReturnUserReviewByUserID(ctx context.Context, userID string) ([]models.PullRequestShort, error)
 	CreatePullRequestAssignedReview(ctx context.Context, prID string, reviewerIDs []string) (bool, error)
 	ExecuteQuery(ctx context.Context, query string, args []interface{}, processRow func(rows pgx.Rows) error) error
+	MergePullRequest(ctx context.Context, prID string) (models.PullRequest, error)
+	ReassignPullRequest(ctx context.Context, prID, oldReviewerID, newReviewID string) error
+	CheckStatusPR(ctx context.Context, prID string) (bool, error)
+	GetAvailableTeamMatesForPR(ctx context.Context, prID string) ([]string, error)
+	PullRequestFullInformation(ctx context.Context, prID string) (models.PullRequestResponse, error)
+	GetTeamMetrics(ctx context.Context) ([]models.TeamMetrics, int, int, error)
 }

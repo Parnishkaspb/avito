@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
 	"strings"
+	"time"
 )
 
 type Database struct {
@@ -340,6 +341,48 @@ func (db *Database) ReturnTeamMembersByUserID(ctx context.Context, userID string
 	return userIDs, nil
 }
 
+func (db *Database) GetAvailableTeamMatesForPR(ctx context.Context, prID string) ([]string, error) {
+	rows, err := db.Pool.Query(
+		ctx,
+		`SELECT u.id
+		 FROM users u
+		 INNER JOIN team_members tm ON tm.user_id = u.id
+		 WHERE tm.team_id = (
+		     SELECT tm2.team_id
+		     FROM team_members tm2
+		     INNER JOIN pull_requests pr ON pr.author_id = tm2.user_id
+		     WHERE pr.id = $1
+		 )
+		 AND u.is_active = TRUE
+		 AND u.id <> (SELECT author_id FROM pull_requests WHERE id = $1)
+		 AND u.id NOT IN (
+		     SELECT user_id
+		     FROM pull_request_assigned_reviewers
+		     WHERE pull_request_id = $1
+		 );`,
+		prID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка запроса: %w", err)
+	}
+	defer rows.Close()
+
+	var userIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("ошибка сканирования: %w", err)
+		}
+		userIDs = append(userIDs, id)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ошибка чтения строк: %w", err)
+	}
+
+	return userIDs, nil
+}
+
 func (db *Database) CreatePullRequest(ctx context.Context, id, name, authorID string) (models.PullRequestShort, error) {
 	var pr models.PullRequestShort
 
@@ -392,44 +435,208 @@ func (db *Database) CreatePullRequestAssignedReview(ctx context.Context, prID st
 	return true, nil
 }
 
-func (db *Database) CreatePullRequestTx(ctx context.Context, tx pgx.Tx, id, name, authorID string) (models.PullRequestShort, error) {
-	var pr models.PullRequestShort
-	err := tx.QueryRow(
-		ctx,
-		`INSERT INTO pull_requests (id, name, author_id) 
-		 VALUES ($1, $2, $3)
-		 RETURNING id, name, author_id, status`,
-		id, name, authorID,
-	).Scan(&pr.PullRequestID, &pr.PullRequestName, &pr.AuthorID, &pr.Status)
+func (db *Database) MergePullRequest(ctx context.Context, prID string) (models.PullRequest, error) {
+	var pr models.PullRequest
+
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return models.PullRequestShort{}, err
+		return pr, fmt.Errorf("не удалось начать транзакцию: %w", err)
 	}
+	defer func() {
+		if p := recover(); p != nil {
+			tx.Rollback(ctx)
+			panic(p)
+		} else if err != nil {
+			tx.Rollback(ctx)
+		} else {
+			tx.Commit(ctx)
+		}
+	}()
+
+	var dbStatus string
+	var mergedAt *time.Time
+
+	err = tx.QueryRow(
+		ctx,
+		`SELECT id, name, author_id, status, merged_at
+		 FROM pull_requests
+		 WHERE id = $1
+		 FOR UPDATE`,
+		prID,
+	).Scan(&pr.PullRequestID, &pr.PullRequestName, &pr.AuthorID, &dbStatus, &mergedAt) // сканируем в string
+	if err != nil {
+		return pr, fmt.Errorf("ошибка при получении PR: %w", err)
+	}
+
+	if dbStatus == "1" {
+		_, err = tx.Exec(
+			ctx,
+			"UPDATE pull_requests SET status = '2', merged_at = NOW() WHERE id = $1",
+			prID,
+		)
+		if err != nil {
+			return pr, fmt.Errorf("ошибка при слиянии PR: %w", err)
+		}
+		dbStatus = "MERGED"
+
+		err = tx.QueryRow(
+			ctx,
+			"SELECT merged_at FROM pull_requests WHERE id = $1",
+			prID,
+		).Scan(&mergedAt)
+		if err != nil {
+			return pr, fmt.Errorf("ошибка при получении времени слияния: %w", err)
+		}
+	}
+
+	pr.Status = dbStatus
+
+	if mergedAt != nil {
+		pr.MergedAt = mergedAt
+	} else {
+		pr.MergedAt = nil
+	}
+
+	var reviewers []string
+	err = tx.QueryRow(
+		ctx,
+		`SELECT COALESCE(array_agg(user_id), '{}') 
+		 FROM pull_request_assigned_reviewers 
+		 WHERE pull_request_id = $1`,
+		prID,
+	).Scan(&reviewers)
+	if err != nil {
+		return pr, fmt.Errorf("ошибка при получении ревьюеров: %w", err)
+	}
+	pr.AssignedReviewers = reviewers
+
 	return pr, nil
 }
 
-func (db *Database) CreatePullRequestAssignedReviewTx(ctx context.Context, tx pgx.Tx, prID string, reviewerIDs []string) (bool, error) {
-	if len(reviewerIDs) == 0 {
-		return true, nil
-	}
-
-	values := make([]string, 0, len(reviewerIDs))
-	args := make([]interface{}, 0, len(reviewerIDs)*2)
-	argPos := 1
-	for _, reviewerID := range reviewerIDs {
-		values = append(values, fmt.Sprintf("($%d, $%d)", argPos, argPos+1))
-		args = append(args, prID, reviewerID)
-		argPos += 2
-	}
-
-	query := fmt.Sprintf(
-		"INSERT INTO pull_request_assigned_reviewers (pull_request_id, user_id) VALUES %s",
-		strings.Join(values, ","),
-	)
-
-	_, err := tx.Exec(ctx, query, args...)
+func (db *Database) ReassignPullRequest(ctx context.Context, prID, oldReviewerID, newReviewerID string) error {
+	var assignedID string
+	err := db.Pool.QueryRow(
+		ctx,
+		"SELECT id FROM pull_request_assigned_reviewers WHERE pull_request_id=$1 AND user_id=$2",
+		prID, oldReviewerID,
+	).Scan(&assignedID)
 	if err != nil {
-		return false, err
+		if err == pgx.ErrNoRows {
+			return pgx.ErrNoRows
+		}
+		return fmt.Errorf("ошибка запроса: %w", err)
 	}
 
-	return true, nil
+	_, err = db.Pool.Exec(
+		ctx,
+		"UPDATE pull_request_assigned_reviewers SET user_id=$1 WHERE id=$2",
+		newReviewerID, assignedID,
+	)
+	if err != nil {
+		return fmt.Errorf("ошибка обновления ревьюера: %w", err)
+	}
+
+	return nil
+}
+
+func (db *Database) CheckStatusPR(ctx context.Context, prID string) (bool, error) {
+	var status string
+
+	err := db.Pool.QueryRow(ctx, "SELECT status FROM pull_requests WHERE id=$1", prID).Scan(&status)
+	if err != nil {
+		return false, fmt.Errorf("ошибка запроса: %w", err)
+	}
+
+	return status == "1", nil
+}
+
+func (db *Database) PullRequestFullInformation(ctx context.Context, prID string) (models.PullRequestResponse, error) {
+	var pr models.PullRequestResponse
+	pr.PullRequestID = prID
+
+	err := db.Pool.QueryRow(
+		ctx,
+		`
+		SELECT pr.name, pr.author_id, prs.name
+		FROM pull_requests pr
+		INNER JOIN pull_request_statuses prs ON prs.id = pr.status
+		WHERE pr.id = $1
+		`,
+		prID,
+	).Scan(&pr.PullRequestName, &pr.AuthorID, &pr.Status)
+
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return models.PullRequestResponse{}, fmt.Errorf("PR %s не найден: %w", prID, err)
+		}
+		return models.PullRequestResponse{}, fmt.Errorf("ошибка при получении PR: %w", err)
+	}
+
+	var reviewers []string
+	err = db.Pool.QueryRow(
+		ctx,
+		`SELECT COALESCE(array_agg(user_id), '{}') 
+		 FROM pull_request_assigned_reviewers 
+		 WHERE pull_request_id = $1`,
+		prID,
+	).Scan(&reviewers)
+	if err != nil {
+		return models.PullRequestResponse{}, fmt.Errorf("ошибка при получении ревьюеров: %w", err)
+	}
+	pr.AssignedReviewers = reviewers
+
+	return pr, nil
+}
+
+func (db *Database) GetTeamMetrics(ctx context.Context) ([]models.TeamMetrics, int, int, error) {
+	var totalPRs, totalTeams int
+
+	err := db.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM pull_requests").Scan(&totalPRs)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	err = db.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM teams").Scan(&totalTeams)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	rows, err := db.Pool.Query(ctx, `
+        SELECT 
+            t.id,
+            t.name,
+            COALESCE(admins.admin_count,0),
+            COALESCE(participants.pr_participants,0)
+        FROM teams t
+        LEFT JOIN (
+            SELECT team_id, COUNT(*) AS admin_count
+            FROM team_members
+            WHERE is_admin = TRUE
+            GROUP BY team_id
+        ) admins ON t.id = admins.team_id
+        LEFT JOIN (
+            SELECT tm.team_id, COUNT(DISTINCT u.id) AS pr_participants
+            FROM team_members tm
+            JOIN users u ON u.id = tm.user_id
+            LEFT JOIN pull_requests pr ON pr.author_id = u.id
+            LEFT JOIN pull_request_assigned_reviewers r ON r.user_id = u.id
+            WHERE pr.id IS NOT NULL OR r.id IS NOT NULL
+            GROUP BY tm.team_id
+        ) participants ON t.id = participants.team_id
+    `)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	defer rows.Close()
+
+	var metrics []models.TeamMetrics
+	for rows.Next() {
+		var m models.TeamMetrics
+		if err := rows.Scan(&m.TeamID, &m.TeamName, &m.AdminCount, &m.PRParticipants); err != nil {
+			return nil, 0, 0, err
+		}
+		metrics = append(metrics, m)
+	}
+
+	return metrics, totalPRs, totalTeams, nil
 }

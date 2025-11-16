@@ -16,3 +16,19 @@ type PullRequestCreateRequest struct {
 	PullRequestName string `json:"pull_request_name"`
 	AuthorID        string `json:"author_id"`
 }
+
+type MergePRRequest struct {
+	PullRequestID string `json:"pull_request_id"`
+}
+
+type MergePRRequestReasing struct {
+	PullRequestID string `json:"pull_request_id"`
+	OldReviewerID string `json:"old_reviewer_id"`
+}
+
+type TeamMetrics struct {
+	TeamID         string
+	TeamName       string
+	AdminCount     int
+	PRParticipants int
+}
